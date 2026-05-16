@@ -1,0 +1,18 @@
+# Dataset
+dataset/
+
+# Model weights
+*.pth
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Rezultati
+results_dir/
+results_dir_lt/
+results_experiments/
+
+# Tracking logi
+*.txt
