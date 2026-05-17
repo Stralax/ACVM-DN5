@@ -1,14 +1,16 @@
 """
-test_trasholds.py
+test_n_samples.py
 -----------------
-Zažene SiamFC-LT tracker za več failure_threshold vrednosti
-in za vsako izpiše Precision, Recall ter F-score.
-
-Fiksni threholdi: 2.5, 3.3, 4.0, 4.9
-Dinamični:        1/2 in 1/3 začetnega scora prvega frame-a (per video)
+Zažene SiamFC-LT tracker za več vrednosti n_samples
+s fiksnim failure_threshold=3.3 in za vsako izpiše
+Precision, Recall ter F-score.
 
 Uporaba:
-    python test_trasholds.py --dataset dataset/dataset-lt --net siamfc_net.pth
+    python test_n_samples.py --dataset dataset/dataset-lt --net siamfc_net.pth
+
+Opcijsko:
+    --results_base  kje shrani rezultate  (privzeto: results_n_samples)
+    --threshold     fiksni threshold      (privzeto: 3.3)
 """
 
 import argparse
@@ -25,19 +27,20 @@ from siamfc_lt import TrackerSiamFCLT
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def run_tracker(dataset_path, network_path, results_dir,
-                threshold=3.3,
-                use_dynamic_threshold=False,
-                dynamic_threshold_ratio=0.5,
-                n_samples=25,
-                visualize=False):
-    """Poženi tracker na vseh sekvencah."""
+def run_tracker(dataset_path, network_path, results_dir, threshold, n_samples, visualize=False):
+    """Poženi tracker z določenim n_samples in threshold-om na vseh sekvencah."""
     os.makedirs(results_dir, exist_ok=True)
 
     sequences = []
     with open(os.path.join(dataset_path, 'list.txt'), 'r') as f:
         for line in f.readlines():
             sequences.append(line.strip())
+
+    tracker = TrackerSiamFCLT(
+        net_path=network_path,
+        failure_threshold=threshold,
+        n_samples=n_samples,
+    )
 
     for sequence_name in sequences:
         print(f'  [tracker] Sekvenca: {sequence_name}')
@@ -48,15 +51,6 @@ def run_tracker(dataset_path, network_path, results_dir,
         if os.path.exists(bboxes_path) and os.path.exists(scores_path):
             print('    Rezultati že obstajajo. Preskakujem.')
             continue
-
-        # Nov tracker za vsako sekvenco — dinamični threshold se resetira
-        tracker = TrackerSiamFCLT(
-            net_path=network_path,
-            failure_threshold=threshold,
-            n_samples=n_samples,
-            use_dynamic_threshold=use_dynamic_threshold,
-            dynamic_threshold_ratio=dynamic_threshold_ratio,
-        )
 
         sequence = VOTSequence(dataset_path, sequence_name)
 
@@ -90,6 +84,7 @@ def run_tracker(dataset_path, network_path, results_dir,
 
 
 def run_evaluation(dataset_path, results_dir):
+    """Pokliče performance_evaluation.py in vrne (precision, recall, fscore)."""
     cmd = [
         sys.executable, 'performance_evaluation.py',
         '--dataset', dataset_path,
@@ -100,11 +95,14 @@ def run_evaluation(dataset_path, results_dir):
 
     precision = recall = fscore = None
     m = re.search(r'Precision:\s*([\d.]+)', output)
-    if m: precision = float(m.group(1))
+    if m:
+        precision = float(m.group(1))
     m = re.search(r'Recall:\s*([\d.]+)', output)
-    if m: recall = float(m.group(1))
+    if m:
+        recall = float(m.group(1))
     m = re.search(r'F-score:\s*([\d.]+)', output)
-    if m: fscore = float(m.group(1))
+    if m:
+        fscore = float(m.group(1))
 
     return precision, recall, fscore, output.strip()
 
@@ -116,85 +114,68 @@ def fmt(val):
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset',      required=True)
-    parser.add_argument('--net',          required=True)
-    parser.add_argument('--results_base', default='results_experiments')
-    parser.add_argument('--visualize',    action='store_true')
+    parser = argparse.ArgumentParser(description='Eksperimenti z različnimi n_samples vrednostmi')
+    parser.add_argument('--dataset',      required=True,  help='Pot do dataseta')
+    parser.add_argument('--net',          required=True,  help='Pot do siamfc_net.pth')
+    parser.add_argument('--results_base', default='results_n_samples',
+                                          help='Korenski direktorij za rezultate')
+    parser.add_argument('--threshold',    type=float, default=4.0,
+                                          help='Fiksni failure_threshold (privzeto: 3.3)')
+    parser.add_argument('--visualize',    action='store_true', help='Pokaži tracking okno')
     args = parser.parse_args()
 
-    # (label, kwargs za run_tracker)
-    experiments = [
-        # ('fiksni 2.5',
-        #  dict(threshold=2.5)),
-        # ('fiksni 3.3',
-        #  dict(threshold=3.3)),
-        ('fiksni 4.0',
-         dict(threshold=4.0)),
-        # ('fiksni 4.9',
-        #  dict(threshold=4.9)),
-        ('dinamični 1/2 initial score',
-         dict(use_dynamic_threshold=True, dynamic_threshold_ratio=1/2)),
-        ('dinamični 1/3 initial score',
-         dict(use_dynamic_threshold=True, dynamic_threshold_ratio=1/3)),
-        ('dinamični 1/4 initial score',
-         dict(use_dynamic_threshold=True, dynamic_threshold_ratio=1/4)),
-    ]
+    # Vrednosti N za testiranje
+    n_values = [1, 5, 10, 15, 20, 25, 50, 100]
 
     print('=' * 65)
-    print('  SiamFC-LT — eksperimenti z različnimi failure_threshold')
+    print('  SiamFC-LT — eksperimenti z različnimi n_samples')
     print('=' * 65)
+    print(f'  Fiksni threshold : {args.threshold}')
+    print(f'  Testirani N      : {n_values}')
     print()
 
     results_summary = []
 
-    for label, kwargs in experiments:
-        # Ime direktorija
-        if kwargs.get('use_dynamic_threshold'):
-            ratio = kwargs['dynamic_threshold_ratio']
-            dir_name = f'dynamic_{ratio:.4f}'
-        else:
-            dir_name = f'threshold_{kwargs["threshold"]:.4f}'
-
-        results_dir = os.path.join(args.results_base, dir_name)
+    for n in n_values:
+        results_dir = os.path.join(args.results_base, f'n_samples_{n}')
 
         print('-' * 65)
-        print(f'  Instanca : {label}')
-        print(f'  Results  : {results_dir}')
+        print(f'  Instanca: n_samples = {n}  (threshold = {args.threshold})')
+        print(f'  Results dir: {results_dir}')
         print()
 
+        # 1) Zaženi tracker
         print('  [1/2] Zaganjam tracker ...')
         try:
-            run_tracker(
-                args.dataset, args.net, results_dir,
-                visualize=args.visualize,
-                **kwargs
-            )
+            run_tracker(args.dataset, args.net, results_dir, args.threshold, n, args.visualize)
         except Exception as e:
-            print(f'  ⚠ Napaka: {e}')
-            results_summary.append((label, None, None, None))
+            print(f'  ⚠ Napaka pri trackerju: {e}')
+            results_summary.append((n, None, None, None))
             print()
             continue
 
-        print('  [2/2] Evalviram ...')
+        # 2) Evaluacija
+        print('  [2/2] Evalviram rezultate ...')
         precision, recall, fscore, raw = run_evaluation(args.dataset, results_dir)
         print(f'  {raw}')
         print()
 
-        results_summary.append((label, precision, recall, fscore))
+        results_summary.append((n, precision, recall, fscore))
 
     # ── Povzetna tabela ───────────────────────────────────────────────────────
     print()
     print('=' * 65)
     print('  POVZETEK REZULTATOV')
     print('=' * 65)
-    print(f"{'Opis':<35} {'Precision':>10} {'Recall':>8} {'F-score':>8}")
-    print('-' * 65)
-    for label, p, r, f in results_summary:
-        print(f'{label:<35} {fmt(p):>10} {fmt(r):>8} {fmt(f):>8}')
+    header = f"{'N (samples)':>12}  {'Precision':>10} {'Recall':>8} {'F-score':>8}"
+    print(header)
+    print('-' * 45)
+    for n, p, r, f in results_summary:
+        print(f'{n:>12}  {fmt(p):>10} {fmt(r):>8} {fmt(f):>8}')
 
     print()
     print(f'Rezultati shranjeni v: {args.results_base}/')
+    print(f'Threshold uporabljen : {args.threshold}')
 
 
 if __name__ == '__main__':
